@@ -25,6 +25,9 @@ try:
     SPARSE_ADAM_AVAILABLE = True
 except:
     SPARSE_ADAM_AVAILABLE = False
+    
+import cv2
+import matplotlib.pyplot as plt
 
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, train_test_exp, separate_sh):
@@ -35,15 +38,40 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     makedirs(gts_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        rendering = render(view, gaussians, pipeline, background, use_trained_exp=train_test_exp, separate_sh=separate_sh)["render"]
+        results = render(view, gaussians, pipeline, background, use_trained_exp=train_test_exp, separate_sh=separate_sh)
+        rendering = results["render"]
         gt = view.original_image[0:3, :, :]
+        invdepthmap = view.invdepthmap
 
         if args.train_test_exp:
             rendering = rendering[..., rendering.shape[-1] // 2:]
             gt = gt[..., gt.shape[-1] // 2:]
 
-        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+        # torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+        # torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+    
+        rendering_cpu = rendering.cpu().numpy()
+        rendering_cpu = (rendering_cpu.transpose(1, 2, 0) * 255).astype('uint8')
+        
+        gt_cpu = gt.cpu().numpy()
+        gt_cpu = (gt_cpu.transpose(1, 2, 0) * 255).astype('uint8')
+        
+        depth_cpu = results['depth'].squeeze(0).cpu().numpy()
+        
+        invdepthmap_cpu = invdepthmap.squeeze(0).cpu().numpy()
+        
+        plt.subplot(1, 4, 1)
+        plt.imshow(rendering_cpu)
+        plt.subplot(1, 4, 2)
+        plt.imshow(gt_cpu)
+        plt.subplot(1, 4, 3)
+        plt.imshow(depth_cpu, cmap='gray')
+        plt.subplot(1, 4, 4)
+        plt.imshow(invdepthmap_cpu, cmap='gray')
+        plt.show()
+        
+        
+        break
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, separate_sh: bool):
     with torch.no_grad():

@@ -11,7 +11,7 @@
 
 import torch
 import math
-from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from diff_gaussian_rasterization_new import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
@@ -78,6 +78,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
             sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
+            dc, shs = None, None
         else:
             if separate_sh:
                 dc, shs = pc.get_features_dc, pc.get_features_rest
@@ -85,24 +86,28 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
                 shs = pc.get_features
     else:
         colors_precomp = override_color
+        
+    dc_objs = pc.get_objects
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     if separate_sh:
-        rendered_image, radii, depth_image = rasterizer(
+        rendered_image, radii, depth_image, objects_image = rasterizer(
             means3D = means3D,
             means2D = means2D,
             dc = dc,
             shs = shs,
+            dc_objs = dc_objs,
             colors_precomp = colors_precomp,
             opacities = opacity,
             scales = scales,
             rotations = rotations,
             cov3D_precomp = cov3D_precomp)
     else:
-        rendered_image, radii, depth_image = rasterizer(
+        rendered_image, radii, depth_image, objects_image = rasterizer(
             means3D = means3D,
             means2D = means2D,
             shs = shs,
+            dc_objs = dc_objs,
             colors_precomp = colors_precomp,
             opacities = opacity,
             scales = scales,
@@ -122,7 +127,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         "viewspace_points": screenspace_points,
         "visibility_filter" : (radii > 0).nonzero(),
         "radii": radii,
-        "depth" : depth_image
+        "depth" : depth_image,
+        "objects" : objects_image,
         }
     
     return out

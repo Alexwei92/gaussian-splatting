@@ -14,9 +14,16 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
 try:
-    from diff_gaussian_rasterization._C import fusedssim, fusedssim_backward
+    from diff_gaussian_rasterization_new._C import fusedssim, fusedssim_backward
 except:
     pass
+
+try:
+    from pytorch3d.ops import knn_points
+    # PYTORCH3D_AVAILABLE = True
+    PYTORCH3D_AVAILABLE = False
+except:
+    PYTORCH3D_AVAILABLE = False
 
 C1 = 0.01 ** 2
 C2 = 0.03 ** 2
@@ -89,3 +96,63 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 def fast_ssim(img1, img2):
     ssim_map = FusedSSIMMap.apply(C1, C2, img1, img2)
     return ssim_map.mean()
+
+
+def loss_cls_3d(features, predictions, k=5, max_points=200000, sample_size=800):
+    """
+    Compute the neighborhood consistency loss for a 3D point cloud using Top-k neighbors
+    and the KL divergence.
+    
+    :param features: Tensor of shape (N, D), where N is the number of points and D is the dimensionality of the feature.
+    :param predictions: Tensor of shape (N, C), where C is the number of classes.
+    :param k: Number of neighbors to consider.
+    :param lambda_val: Weighting factor for the loss.
+    :param max_points: Maximum number of points for downsampling. If the number of points exceeds this, they are randomly downsampled.
+    :param sample_size: Number of points to randomly sample for computing the loss.
+    
+    :return: Computed loss value.
+    """
+    
+    device = features.device
+    N, D = features.shape
+    C = predictions.shape[1]
+    
+    # Conditionally downsample if points exceed max_points
+    if N > max_points:
+        indices = torch.randperm(features.size(0), device=device)[:max_points]
+        features = features[indices]
+        predictions = predictions[indices]
+        N = max_points
+
+    # Randomly sample points for which we'll compute the loss
+    sample_indices = torch.randperm(features.size(0), device=device)[:sample_size]
+    sample_features = features[sample_indices]  # (sample_size, D)
+    sample_preds = predictions[sample_indices]  # (sample_size, C)
+
+    if PYTORCH3D_AVAILABLE:
+        # Prepare for knn_points: (batch_size, N, D)
+        sample_features_batch = sample_features.unsqueeze(0)  # (1, sample_size, D)
+        features_batch = features.unsqueeze(0)  # (1, N, D)
+    
+        # Perform KNN search
+        knn = knn_points(sample_features_batch, features_batch, K=k)
+        neighbor_indices = knn.idx[0]  # (sample_size, k)
+        
+    else:
+        # Compute top-k nearest neighbors directly in PyTorch
+        dists = torch.cdist(sample_features, features)  # Compute pairwise distances
+        _, neighbor_indices = dists.topk(k, largest=False)  # Get top-k smallest distances
+
+    # Fetch neighbor predictions using indexing
+    neighbor_preds = predictions[neighbor_indices]  # (sample_size, k, C)
+
+    # Compute KL divergence
+    log_P = torch.log(sample_preds.clamp(min=1e-10, max=1.0)).unsqueeze(1)  # (sample_size, 1, C)
+    log_Q = torch.log(neighbor_preds.clamp(min=1e-10, max=1.0))  # (sample_size, k, C)
+    kl = sample_preds.unsqueeze(1) * (log_P - log_Q)  # (sample_size, k, C)
+    loss = kl.sum(dim=-1).sum(dim=-1).mean()
+
+    # Normalize loss into [0, 1]
+    normalized_loss = loss / C
+
+    return normalized_loss
